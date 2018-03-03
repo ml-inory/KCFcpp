@@ -1,7 +1,5 @@
 #include <iostream>
-#include <fstream>
-#include <sstream>
-#include <algorithm>
+#include <string>
 
 #include <opencv2/core/core.hpp>
 #include <opencv2/highgui/highgui.hpp>
@@ -13,6 +11,48 @@
 using namespace std;
 using namespace cv;
 
+// Frame readed
+Mat frame, moving_frame;
+
+// 左上角点和右下角点
+cv::Point tl_point, br_point;
+
+// 窗口名称
+std::string window_name("frame");
+
+// 图像大小
+cv::Size window_size(640, 360);
+
+// 初始框设置完成标记
+bool is_init = false;
+
+// 鼠标回调
+void on_mouse(int event, int x, int y, int flags, void* params)
+{
+	if (frame.empty())
+		return;
+
+	cv::Point cur_point = cv::Point(x, y);
+	// cout << "x:" << x << endl;
+	// cout << "y:" << y << endl;
+
+	if (event == CV_EVENT_LBUTTONDOWN)
+	{
+		tl_point = cur_point;
+	}
+	else if (event == CV_EVENT_MOUSEMOVE && (flags & CV_EVENT_FLAG_LBUTTON))
+	{
+		moving_frame = frame.clone();
+		cv::rectangle(moving_frame, tl_point, cur_point, Scalar(0,255,0), 2);
+		// cv::imshow(window_name, moving_frame);
+	}
+	else if (event == CV_EVENT_LBUTTONUP)
+	{
+		br_point = cur_point;
+		is_init = true;
+	}
+}
+
 int main(int argc, char* argv[]){
 
 	if (argc > 5) return -1;
@@ -20,7 +60,7 @@ int main(int argc, char* argv[]){
 	bool HOG = true;
 	bool FIXEDWINDOW = false;
 	bool MULTISCALE = true;
-	bool SILENT = true;
+	// bool SILENT = true;
 	bool LAB = false;
 
 	for(int i = 0; i < argc; i++){
@@ -43,97 +83,62 @@ int main(int argc, char* argv[]){
 	// Create KCFTracker object
 	KCFTracker tracker(HOG, FIXEDWINDOW, MULTISCALE, LAB);
 
-	// Frame readed
-	Mat frame;
-
 	// Tracker results
 	Rect result;
 
-	// Path to list.txt
-	ifstream listFile;
-	string fileName = "images.txt";
-  	listFile.open(fileName);
+    // Video Capture
+    cv::VideoCapture capture(0);
 
-  	// Read groundtruth for the 1st frame
-  	ifstream groundtruthFile;
-	string groundtruth = "region.txt";
-  	groundtruthFile.open(groundtruth);
-  	string firstLine;
-  	getline(groundtruthFile, firstLine);
-	groundtruthFile.close();
-  	
-  	istringstream ss(firstLine);
+    if (!capture.isOpened())
+    {
+        cout << "Cannot open camera" << endl;
+        return -1;
+    }
 
-  	// Read groundtruth like a dumb
-  	float x1, y1, x2, y2, x3, y3, x4, y4;
-  	char ch;
-	ss >> x1;
-	ss >> ch;
-	ss >> y1;
-	ss >> ch;
-	ss >> x2;
-	ss >> ch;
-	ss >> y2;
-	ss >> ch;
-	ss >> x3;
-	ss >> ch;
-	ss >> y3;
-	ss >> ch;
-	ss >> x4;
-	ss >> ch;
-	ss >> y4; 
+    cv::namedWindow(window_name);
+    // 设置回调
+    cv::setMouseCallback(window_name, on_mouse);
 
-	// Using min and max of X and Y for groundtruth rectangle
-	float xMin =  min(x1, min(x2, min(x3, x4)));
-	float yMin =  min(y1, min(y2, min(y3, y4)));
-	float width = max(x1, max(x2, max(x3, x4))) - xMin;
-	float height = max(y1, max(y2, max(y3, y4))) - yMin;
+    // 读图，等待1秒让isp调好
+    for (int i = 0; i < 2; ++i)
+    {
+    	bool ret = capture.read(frame);
+		if (!ret)
+			return -1;
+		cv::waitKey(500);
+    }
+    
+	cv::resize(frame, frame, window_size);
+	moving_frame = frame.clone();
 
-	
-	// Read Images
-	ifstream listFramesFile;
-	string listFrames = "images.txt";
-	listFramesFile.open(listFrames);
-	string frameName;
+    // 未设置好初始框则循环
+    while (!is_init)
+    {
+    	cv::imshow(window_name, moving_frame);
+    	if (cv::waitKey(40) == 'q')
+            return -1;
+    }
 
+    cv::Rect init_rect(tl_point, br_point);
+    // 初始化跟踪器
+    tracker.init(init_rect, frame);
 
-	// Write Results
-	ofstream resultsFile;
-	string resultsPath = "output.txt";
-	resultsFile.open(resultsPath);
+    while (capture.isOpened())
+    {
+        bool ret = capture.read(frame);
+        if (!ret)
+            break;
+        cv::resize(frame, frame, window_size);
 
-	// Frame counter
-	int nFrames = 0;
+        // 跟踪器更新
+        cv::Rect result = tracker.update(frame);
 
+        cv::rectangle(frame, result, Scalar(0,255,0), 2);
 
-	while ( getline(listFramesFile, frameName) ){
-		frameName = frameName;
+        cv::imshow(window_name, frame);
+        if (cv::waitKey(40) == 'q')
+            break;
+    }
 
-		// Read each frame from the list
-		frame = imread(frameName, CV_LOAD_IMAGE_COLOR);
-
-		// First frame, give the groundtruth to the tracker
-		if (nFrames == 0) {
-			tracker.init( Rect(xMin, yMin, width, height), frame );
-			rectangle( frame, Point( xMin, yMin ), Point( xMin+width, yMin+height), Scalar( 0, 255, 255 ), 1, 8 );
-			resultsFile << xMin << "," << yMin << "," << width << "," << height << endl;
-		}
-		// Update
-		else{
-			result = tracker.update(frame);
-			rectangle( frame, Point( result.x, result.y ), Point( result.x+result.width, result.y+result.height), Scalar( 0, 255, 255 ), 1, 8 );
-			resultsFile << result.x << "," << result.y << "," << result.width << "," << result.height << endl;
-		}
-
-		nFrames++;
-
-		if (!SILENT){
-			imshow("Image", frame);
-			waitKey(1);
-		}
-	}
-	resultsFile.close();
-
-	listFile.close();
-
+    return 1;
 }
